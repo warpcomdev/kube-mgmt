@@ -8,9 +8,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/hashicorp/go-multierror"
 	"github.com/open-policy-agent/kube-mgmt/pkg/opa"
 	"github.com/sirupsen/logrus"
 	v1 "k8s.io/api/core/v1"
@@ -207,7 +209,16 @@ func (s *Sync) delete(obj interface{}) {
 
 func (s *Sync) syncAdd(cm *v1.ConfigMap, isPolicy bool) {
 	path := fmt.Sprintf("%v/%v", cm.Namespace, cm.Name)
-	for key, value := range cm.Data {
+	// sort keys so that errors, if any, are always sorted
+	// in the same order
+	sortedKeys := make([]string, 0, len(cm.Data))
+	for key := range cm.Data {
+		sortedKeys = append(sortedKeys, key)
+	}
+	sort.Strings(sortedKeys)
+	var multiErr error
+	for _, key := range sortedKeys {
+		value := cm.Data[key]
 		id := fmt.Sprintf("%v/%v", path, key)
 
 		var err error
@@ -223,17 +234,19 @@ func (s *Sync) syncAdd(cm *v1.ConfigMap, isPolicy bool) {
 				err = s.opa.PutData(id, data)
 			}
 		}
-
 		if err != nil {
-			s.setStatusAnnotation(cm, status{
-				Status: "error",
-				Error:  err,
-			}, isPolicy)
-		} else {
-			s.setStatusAnnotation(cm, status{
-				Status: "ok",
-			}, isPolicy)
+			multiErr = multierror.Append(multiErr, err)
 		}
+	}
+	if multiErr != nil {
+		s.setStatusAnnotation(cm, status{
+			Status: "error",
+			Error:  multiErr,
+		}, isPolicy)
+	} else {
+		s.setStatusAnnotation(cm, status{
+			Status: "ok",
+		}, isPolicy)
 	}
 }
 
@@ -265,10 +278,19 @@ func (s *Sync) setStatusAnnotation(cm *v1.ConfigMap, st status, isPolicy bool) {
 	if err != nil {
 		logrus.Errorf("Failed to serialize %v for %v/%v: %v", statusAnnotationKey, cm.Namespace, cm.Name, err)
 	}
+	annotation := string(bs)
+	if cm.Annotations != nil {
+		if existing, ok := cm.Annotations[policyStatusAnnotationKey]; ok {
+			if existing == annotation {
+				// If the annotation is the same, skip saving it
+				return
+			}
+		}
+	}
 	patch := map[string]interface{}{
 		"metadata": map[string]interface{}{
 			"annotations": map[string]interface{}{
-				policyStatusAnnotationKey: string(bs),
+				policyStatusAnnotationKey: annotation,
 			},
 		},
 	}
