@@ -4,7 +4,7 @@ metadata:
   name: opa
 build:
   artifacts:
-    - image: openpolicyagent/kube-mgmt
+    - image: warpcomdev/kube-mgmt
       context: .
       docker:
         buildArgs:
@@ -26,7 +26,7 @@ profiles:
             upgradeOnChange: false
             skipBuildDependencies: true
             artifactOverrides:
-              mgmt.image: openpolicyagent/kube-mgmt
+              mgmt.image: warpcomdev/kube-mgmt
             imageStrategy:
               helm: {}
   - name: e2e
@@ -41,6 +41,6 @@ profiles:
             valuesFiles:
               - test/e2e/values-e2e.yaml
             artifactOverrides:
-              mgmt.image: openpolicyagent/kube-mgmt
+              mgmt.image: warpcomdev/kube-mgmt
             imageStrategy:
               helm: {}
