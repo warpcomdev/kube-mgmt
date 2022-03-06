@@ -249,7 +249,7 @@ func (s *Sync) syncAdd(cm *v1.ConfigMap, isPolicy bool) {
 	if multiErr != nil {
 		s.setStatusAnnotation(cm, status{
 			Status: "error",
-			Error:  multiErr,
+			Error:  multiErr.Error(), // multiErr does not serialize to json
 		}, isPolicy)
 	} else {
 		s.setStatusAnnotation(cm, status{
@@ -331,7 +331,7 @@ func (s *Sync) syncReset(id string) {
 
 type status struct {
 	Status string `json:"status"`
-	Error  error  `json:"error,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 // fingerprint for the labels and data of a configmap.
