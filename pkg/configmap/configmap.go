@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hashicorp/go-multierror"
 	"github.com/open-policy-agent/kube-mgmt/pkg/opa"
 	"github.com/sirupsen/logrus"
 	v1 "k8s.io/api/core/v1"
@@ -189,9 +188,8 @@ func (s *Sync) add(obj interface{}) {
 }
 
 func (s *Sync) update(oldObj, obj interface{}) {
-	cm := obj.(*v1.ConfigMap)
+	oldCm, cm := oldObj.(*v1.ConfigMap), obj.(*v1.ConfigMap)
 	if match, isPolicy := s.matcher(cm); match {
-		oldCm := oldObj.(*v1.ConfigMap)
 		// avoid processing new versions of the ConfigMap that don't actually
 		// change policy, data or labels
 		// (issue https://github.com/open-policy-agent/kube-mgmt/issues/131)
@@ -204,11 +202,16 @@ func (s *Sync) update(oldObj, obj interface{}) {
 		s.syncAdd(cm, isPolicy)
 	} else {
 		// check if the label was removed
-		s.delete(oldObj)
+		if match, isPolicy := s.matcher(oldCm); match {
+			s.syncRemove(oldCm, isPolicy)
+		}
 	}
 }
 
 func (s *Sync) delete(obj interface{}) {
+	if d, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+		obj = d.Obj
+	}
 	cm := obj.(*v1.ConfigMap)
 	if match, isPolicy := s.matcher(cm); match {
 		s.syncRemove(cm, isPolicy)
@@ -223,7 +226,7 @@ func (s *Sync) syncAdd(cm *v1.ConfigMap, isPolicy bool) {
 		sortedKeys = append(sortedKeys, key)
 	}
 	sort.Strings(sortedKeys)
-	var multiErr *multierror.Error
+	var syncErr errList
 	for _, key := range sortedKeys {
 		value := cm.Data[key]
 		id := fmt.Sprintf("%v/%v", path, key)
@@ -242,13 +245,13 @@ func (s *Sync) syncAdd(cm *v1.ConfigMap, isPolicy bool) {
 			}
 		}
 		if err != nil {
-			multiErr = multierror.Append(multiErr, err)
+			syncErr = append(syncErr, err)
 		}
 	}
-	if multiErr != nil {
+	if syncErr != nil {
 		s.setStatusAnnotation(cm, status{
 			Status: "error",
-			Error:  (*withMarshalJSON)(multiErr), // cast multierror.Error to support json serialization
+			Error:  syncErr,
 		}, isPolicy)
 	} else {
 		s.setStatusAnnotation(cm, status{
@@ -328,17 +331,6 @@ func (s *Sync) syncReset(id string) {
 	}
 }
 
-// jsonError makes sure status struct is json serializable
-type jsonError interface {
-	error
-	json.Marshaler
-}
-
-type status struct {
-	Status string    `json:"status"`
-	Error  jsonError `json:"error,omitempty"`
-}
-
 // fingerprint for the labels and data of a configmap.
 func fingerprint(cm *v1.ConfigMap) uint64 {
 	hash := fnv.New64a()
@@ -348,37 +340,48 @@ func fingerprint(cm *v1.ConfigMap) uint64 {
 	return hash.Sum64()
 }
 
-// withMarshalJSON is a json-seriazable version of multierror.Error
-type withMarshalJSON multierror.Error
+// errList is an error type that can marshal a list of errors to json
+type errList []error
+
+var (
+	// Make sure we implement the proper interfaces
+	_ error          = errList{}
+	_ json.Marshaler = errList{}
+)
+
+type status struct {
+	Status string  `json:"status"`
+	Error  errList `json:"error,omitempty"`
+}
 
 // MarshalJSON implements json.Marshaler
-func (m *withMarshalJSON) MarshalJSON() ([]byte, error) {
-	if len(m.Errors) <= 0 {
+func (m errList) MarshalJSON() ([]byte, error) {
+	if m == nil || len(m) <= 0 {
 		return []byte(`""`), nil
 	}
-	list := make([]json.RawMessage, 0, len(m.Errors))
-	for _, err := range m.Errors {
-		// If error can be marshalled to json, use it.
+	list := make([]json.RawMessage, 0, len(m))
+	for _, err := range m {
 		if b, marshalErr := json.Marshal(err); marshalErr == nil {
 			list = append(list, b)
 		} else {
-			// Otherwise, add the quoted version of the error string
+			// fallback to quoted .Error() string if marshalling fails
 			list = append(list, []byte(fmt.Sprintf("%q", err.Error())))
 		}
 	}
 	if len(list) == 1 {
-		// for backward compatibility, single errors are not wrapped in a list
-		return list[0], nil
+		return list[0], nil // for backward compatibility
 	}
 	return json.Marshal(list)
 }
 
 // Error implements error
-func (m *withMarshalJSON) Error() string {
-	return (*multierror.Error)(m).Error()
-}
-
-// Unwrap implements errors.Unwrap
-func (m *withMarshalJSON) Unwrap() error {
-	return (*multierror.Error)(m).Unwrap()
+func (m errList) Error() string {
+	if m == nil || len(m) <= 0 {
+		return ""
+	}
+	text := make([]string, 0, len(m))
+	for _, err := range m {
+		text = append(text, err.Error())
+	}
+	return strings.Join(text, "\n")
 }
