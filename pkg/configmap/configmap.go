@@ -223,7 +223,7 @@ func (s *Sync) syncAdd(cm *v1.ConfigMap, isPolicy bool) {
 		sortedKeys = append(sortedKeys, key)
 	}
 	sort.Strings(sortedKeys)
-	var multiErr error
+	var multiErr *multierror.Error
 	for _, key := range sortedKeys {
 		value := cm.Data[key]
 		id := fmt.Sprintf("%v/%v", path, key)
@@ -248,7 +248,7 @@ func (s *Sync) syncAdd(cm *v1.ConfigMap, isPolicy bool) {
 	if multiErr != nil {
 		s.setStatusAnnotation(cm, status{
 			Status: "error",
-			Error:  multiErr.Error(), // multiErr does not serialize to json
+			Error:  (*withMarshalJSON)(multiErr), // cast multierror.Error to support json serialization
 		}, isPolicy)
 	} else {
 		s.setStatusAnnotation(cm, status{
@@ -328,9 +328,15 @@ func (s *Sync) syncReset(id string) {
 	}
 }
 
+// jsonError makes sure status struct is json serializable
+type jsonError interface {
+	error
+	json.Marshaler
+}
+
 type status struct {
-	Status string `json:"status"`
-	Error  string `json:"error,omitempty"`
+	Status string    `json:"status"`
+	Error  jsonError `json:"error,omitempty"`
 }
 
 // fingerprint for the labels and data of a configmap.
@@ -340,4 +346,39 @@ func fingerprint(cm *v1.ConfigMap) uint64 {
 	data.Encode(cm.Labels)
 	data.Encode(cm.Data)
 	return hash.Sum64()
+}
+
+// withMarshalJSON is a json-seriazable version of multierror.Error
+type withMarshalJSON multierror.Error
+
+// MarshalJSON implements json.Marshaler
+func (m *withMarshalJSON) MarshalJSON() ([]byte, error) {
+	if len(m.Errors) <= 0 {
+		return []byte(`""`), nil
+	}
+	list := make([]json.RawMessage, 0, len(m.Errors))
+	for _, err := range m.Errors {
+		// If error can be marshalled to json, use it.
+		if b, marshalErr := json.Marshal(err); marshalErr == nil {
+			list = append(list, b)
+		} else {
+			// Otherwise, add the quoted version of the error string
+			list = append(list, []byte(fmt.Sprintf("%q", err.Error())))
+		}
+	}
+	if len(list) == 1 {
+		// for backward compatibility, single errors are not wrapped in a list
+		return list[0], nil
+	}
+	return json.Marshal(list)
+}
+
+// Error implements error
+func (m *withMarshalJSON) Error() string {
+	return (*multierror.Error)(m).Error()
+}
+
+// Unwrap implements errors.Unwrap
+func (m *withMarshalJSON) Unwrap() error {
+	return (*multierror.Error)(m).Unwrap()
 }
