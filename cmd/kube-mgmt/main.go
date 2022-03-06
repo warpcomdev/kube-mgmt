@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"github.com/open-policy-agent/kube-mgmt/pkg/version"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -79,6 +81,8 @@ func main() {
 	rootCmd.Flags().StringVarP(&params.policyValue, "policy-value", "", "rego", "replace value rego")
 
 	// Replication options.
+	params.replicateNamespace.SupportsNamespace = true
+	params.replicateCluster.SupportsNamespace = false
 	rootCmd.Flags().BoolVarP(&params.enablePolicies, "enable-policies", "", true, "whether to automatically discover policies from ConfigMaps")
 	rootCmd.Flags().BoolVarP(&params.enableData, "enable-data", "", false, "whether to automatically discover data from correctly labelled ConfigMaps")
 	rootCmd.Flags().StringSliceVarP(&params.policies, "policies", "", []string{"opa", "kube-federation-scheduling-policy"}, "automatically load policies from these namespaces")
@@ -172,20 +176,17 @@ func run(params *params) {
 		}
 	}
 
-	for _, gvk := range params.replicateCluster {
-		sync := data.New(kubeconfig, opa.New(params.opaURL, params.opaAuth).Prefix(params.replicatePath), getResourceType(gvk, false))
-		_, err := sync.Run()
+	var client dynamic.Interface
+	resources := append(getResourceTypes(params.replicateNamespace), getResourceTypes(params.replicateCluster)...)
+	if len(resources) > 0 {
+		client, err = dynamic.NewForConfig(kubeconfig)
 		if err != nil {
-			logrus.Fatalf("Failed to start data sync for %v: %v", gvk, err)
+			logrus.Fatalf("Failed to get dynamic client: %v", err)
 		}
 	}
-
-	for _, gvk := range params.replicateNamespace {
-		sync := data.New(kubeconfig, opa.New(params.opaURL, params.opaAuth).Prefix(params.replicatePath), getResourceType(gvk, true))
-		_, err := sync.Run()
-		if err != nil {
-			logrus.Fatalf("Failed to start data sync for %v: %v", gvk, err)
-		}
+	for _, resource := range resources {
+		sync := data.New(client, opa.New(params.opaURL, params.opaAuth).Prefix(params.replicatePath), resource)
+		go sync.Run(context.TODO())
 	}
 
 	quit := make(chan struct{})
@@ -199,11 +200,18 @@ func loadRESTConfig(path string) (*rest.Config, error) {
 	return rest.InClusterConfig()
 }
 
-func getResourceType(gvk groupVersionKind, namespaced bool) types.ResourceType {
-	return types.ResourceType{
-		Namespaced: namespaced,
-		Group:      gvk.Group,
-		Version:    gvk.Version,
-		Resource:   gvk.Kind,
+func getResourceTypes(f gvkFlag) []types.ConstrainedResourceType {
+	result := make([]types.ConstrainedResourceType, 0, len(f.Gvk))
+	for _, gvk := range f.Gvk {
+		result = append(result, types.ConstrainedResourceType{
+			ResourceType: types.ResourceType{
+				Namespaced: f.SupportsNamespace,
+				Group:      gvk.Group,
+				Version:    gvk.Version,
+				Resource:   gvk.Kind,
+			},
+			Namespace: gvk.Namespace,
+		})
 	}
+	return result
 }

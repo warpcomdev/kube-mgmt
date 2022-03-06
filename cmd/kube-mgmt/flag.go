@@ -5,36 +5,50 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 )
 
 type groupVersionKind struct {
-	Group   string
-	Version string
-	Kind    string
+	Group     string
+	Version   string
+	Kind      string
+	Namespace string
 }
 
-var errBadFormat = errors.New("format: group/version/kind")
+const (
+	formatWithNamespace    = "[group/]version/kind[:namespace]"
+	formatWithoutNamespace = "[group/]version/kind"
+)
+
+var (
+	errBadFormatWithNamespace    = fmt.Errorf("format: %s", formatWithNamespace)
+	errBadFormatWithoutNamespace = fmt.Errorf("format: %s", formatWithoutNamespace)
+)
 
 func (gvk groupVersionKind) String() string {
+	var name string
 	if gvk.Group != "" {
-		return fmt.Sprintf("%v/%v/%v", gvk.Group, gvk.Version, gvk.Kind)
+		name = fmt.Sprintf("%v/%v/%v", gvk.Group, gvk.Version, gvk.Kind)
+	} else {
+		name = fmt.Sprintf("%v/%v", gvk.Version, gvk.Kind)
 	}
-	return fmt.Sprintf("%v/%v", gvk.Version, gvk.Kind)
+	if gvk.Namespace != "" {
+		return strings.Join([]string{name, gvk.Namespace}, ":")
+	}
+	return name
 }
 
-func (gvk *groupVersionKind) Parse(value string) error {
+func (gvk *groupVersionKind) Parse(value string) bool {
 	parts := strings.SplitN(value, "/", 3)
 	for i := range parts {
 		if len(parts[i]) == 0 {
-			return errBadFormat
+			return false
 		}
 		parts[i] = strings.ToLower(parts[i])
 	}
 	if len(parts) < 2 {
-		return errBadFormat
+		return false
 	}
 	if len(parts) == 2 {
 		gvk.Version = parts[0]
@@ -44,24 +58,46 @@ func (gvk *groupVersionKind) Parse(value string) error {
 		gvk.Version = parts[1]
 		gvk.Kind = parts[2]
 	}
-	return nil
+	if index := strings.Index(gvk.Kind, ":"); index >= 0 {
+		if index == 0 || index >= len(gvk.Kind)-1 {
+			return false
+		}
+		namespace := gvk.Kind[index+1:]
+		gvk.Kind = gvk.Kind[:index]
+		if namespace != "" && namespace != "*" {
+			gvk.Namespace = namespace
+		}
+	}
+	return true
 }
 
-type gvkFlag []groupVersionKind
+type gvkFlag struct {
+	Gvk               []groupVersionKind
+	SupportsNamespace bool
+}
 
 func (f *gvkFlag) String() string {
-	return fmt.Sprint(*f)
+	return fmt.Sprint(f.Gvk)
 }
 
 func (f *gvkFlag) Set(value string) error {
 	var gvk groupVersionKind
-	if err := gvk.Parse(value); err != nil {
-		return err
+	if ok := gvk.Parse(value); !ok {
+		if f.SupportsNamespace {
+			return errBadFormatWithNamespace
+		}
+		return errBadFormatWithoutNamespace
 	}
-	*f = append(*f, gvk)
+	if !f.SupportsNamespace && gvk.Namespace != "" {
+		return errBadFormatWithoutNamespace
+	}
+	f.Gvk = append(f.Gvk, gvk)
 	return nil
 }
 
 func (f *gvkFlag) Type() string {
-	return "[group/]version/resource"
+	if f.SupportsNamespace {
+		return formatWithNamespace
+	}
+	return formatWithoutNamespace
 }
