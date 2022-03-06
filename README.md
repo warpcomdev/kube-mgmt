@@ -112,6 +112,9 @@ Replication is enabled with the following options:
 # Replicate namespace-level resources. May be specified multiple times.
 --replicate=<[group/]version/resource>
 
+# You can also constrain namespace-level resource to a particular namespace.
+--replicate=<[group/]version/resource:namespace>
+
 # Replicate cluster-level resources. May be specified multiple times.
 --replicate-cluster=<[group/]version/resource>
 ```
