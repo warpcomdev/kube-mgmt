@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -12,46 +13,76 @@ import (
 func TestFlagParsing(t *testing.T) {
 	var f gvkFlag
 
-	badPaths := []string{
-		"foo/bar/",
-		"foo",
+	badPaths := []struct {
+		path       string
+		namespaced bool
+	}{
+		{"foo/bar/", false},
+		{"foo/bar:", false},
+		{"foo/bar:baz", false},
+		{"foo", false},
+		{"bar/baz/", true},
+		{"bar/baz:", true},
 	}
 
 	for _, tc := range badPaths {
-		if err := f.Set(tc); err == nil {
+		f.SupportsNamespace = tc.namespaced
+		if err := f.Set(tc.path); err == nil {
 			t.Fatalf("Expected error from %v", tc)
 		}
 	}
 
-	expected := gvkFlag{
-		{"example.org", "foo", "bar"},
+	testCases := []struct {
+		path       string
+		expected   groupVersionKind
+		namespaced bool
+	}{
+		{"example.org/Foo/bar", groupVersionKind{"example.org", "foo", "bar", ""}, false},
+		{"example.org/Bar/baz", groupVersionKind{"example.org", "bar", "baz", ""}, false},
+		{"v2/corge", groupVersionKind{"", "v2", "corge", ""}, false},
+		{"test/some/namespace:ns1", groupVersionKind{"test", "some", "namespace", "ns1"}, true},
+		{"remove/star:*", groupVersionKind{"", "remove", "star", ""}, true},
+		{"namespaced/without/namespace", groupVersionKind{"namespaced", "without", "namespace", ""}, true},
 	}
 
-	if err := f.Set("example.org/Foo/bar"); err != nil || !reflect.DeepEqual(expected, f) {
-		t.Fatalf("Expected %v but got: %v (err: %v)", expected, f, err)
+	for index, testCase := range testCases {
+		f.SupportsNamespace = testCase.namespaced
+		err := f.Set(testCase.path)
+		if err != nil {
+			t.Fatalf("Error while parsing %q: %v", testCase.path, err)
+		}
+		if len(f.Gvk) != index+1 {
+			t.Fatalf("Value %q was not added to flag", testCase.path)
+		}
+		if !reflect.DeepEqual(testCase.expected, f.Gvk[index]) {
+			t.Fatalf("Expected %#v but got: %#v", testCase.expected, f.Gvk)
+		}
 	}
-
-	expected = append(expected, groupVersionKind{"example.org", "bar", "baz"})
-
-	if err := f.Set("example.org/Bar/baz"); err != nil || !reflect.DeepEqual(expected, f) {
-		t.Fatalf("Expected %v but got: %v (err: %v)", expected, f, err)
-	}
-
-	expected = append(expected, groupVersionKind{"", "v2", "corge"})
-
-	if err := f.Set("v2/corge"); err != nil || !reflect.DeepEqual(expected, f) {
-		t.Fatalf("Expected %v but got: %v (err: %v)", expected, f, err)
-	}
-
 }
 
 func TestFlagString(t *testing.T) {
 
 	var f gvkFlag
-	expected := "[example.org/foo/bar]"
+	testCases := []struct {
+		path       string
+		expected   string
+		namespaced bool
+	}{
+		{"example.org/Foo/bar", "example.org/foo/bar", false},
+		{"example.org/Bar/baz", "example.org/bar/baz", false},
+		{"v2/corge", "v2/corge", false},
+		{"test/some/namespace:ns1", "test/some/namespace:ns1", true},
+		{"remove/star:*", "remove/star", true},
+		{"namespaced/without/namespace", "namespaced/without/namespace", true},
+	}
 
-	if err := f.Set("example.org/foo/bar"); err != nil || f.String() != expected {
-		t.Fatalf("Exepcted %v but got: %v (err: %v)", expected, f.String(), err)
+	expected := make([]string, 0, len(testCases))
+	for _, testCase := range testCases {
+		expected = append(expected, testCase.expected)
+		f.SupportsNamespace = testCase.namespaced
+		if err := f.Set(testCase.path); err != nil || f.String() != fmt.Sprint(expected) {
+			t.Fatalf("Expected %v but got: %v (err: %v)", fmt.Sprint(expected), f.String(), err)
+		}
 	}
 }
 

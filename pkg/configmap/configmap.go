@@ -338,7 +338,6 @@ func fingerprint(cm *v1.ConfigMap) uint64 {
 	hash := fnv.New64a()
 	data := json.NewEncoder(hash)
 	data.Encode(cm.Labels)
-	data.Encode("---")
 	data.Encode(cm.Data)
 	return hash.Sum64()
 }
