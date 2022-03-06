@@ -173,11 +173,11 @@ func (s *GenericSync) processNext(store cache.Store, key interface{}, init *bool
 	}
 	// On init, load a full dump of the data store
 	if path == initPath {
-		start := time.Now()
-		if err := s.syncAll(store.List()); err != nil {
+		start, list := time.Now(), store.List()
+		if err := s.syncAll(list); err != nil {
 			return err
 		}
-		logrus.Infof("Loaded %v resources into OPA. Took %v", s.ns, time.Since(start))
+		logrus.Infof("Loaded %d resources of kind %v into OPA. Took %v", len(list), s.ns, time.Since(start))
 		*init = true
 		return nil
 	}
