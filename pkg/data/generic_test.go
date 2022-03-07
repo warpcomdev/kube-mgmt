@@ -9,7 +9,6 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/client-go/rest"
 )
 
 func TestGeneratePatchesSingleClusterResource(t *testing.T) {
@@ -38,7 +37,6 @@ func TestGeneratePatchesSingleClusterResource(t *testing.T) {
 	            "name":"node1"
 	        },
 	        "spec":{
-	
 	        },
 	        "status":{
 	            "daemonEndpoints":{
@@ -91,7 +89,6 @@ func TestGeneratePatchesSingleClusterResourceWithPrefix(t *testing.T) {
 	            "name":"node1"
 	        },
 	        "spec":{
-	
 	        },
 	        "status":{
 	            "daemonEndpoints":{
@@ -162,7 +159,6 @@ func TestGeneratePatchesMultipleClusterResourceWithPrefix(t *testing.T) {
 	            "name":"node1"
 	        },
 	        "spec":{
-	
 	        },
 	        "status":{
 	            "daemonEndpoints":{
@@ -190,7 +186,6 @@ func TestGeneratePatchesMultipleClusterResourceWithPrefix(t *testing.T) {
 	            "name":"node2"
 	        },
 	        "spec":{
-	
 	        },
 	        "status":{
 	            "daemonEndpoints":{
@@ -218,7 +213,6 @@ func TestGeneratePatchesMultipleClusterResourceWithPrefix(t *testing.T) {
 	            "name":"node3"
 	        },
 	        "spec":{
-	
 	        },
 	        "status":{
 	            "daemonEndpoints":{
@@ -277,7 +271,6 @@ func TestGeneratePatchesSingleNamespacedResource(t *testing.T) {
 	                "containers":null
 	            },
 	            "status":{
-	
 	            }
 	        }
 	    }
@@ -318,7 +311,6 @@ func TestGeneratePatchesSingleNamespacedResourceWithPrefix(t *testing.T) {
 	                "containers":null
 	            },
 	            "status":{
-	
 	            }
 	        }
 	    }
@@ -379,7 +371,6 @@ func TestGeneratePatchesMultipleNamespacedResourceWithPrefix(t *testing.T) {
 	                "containers":null
 	            },
 	            "status":{
-	
 	            }
 	        },
 			"pod2":{
@@ -392,7 +383,6 @@ func TestGeneratePatchesMultipleNamespacedResourceWithPrefix(t *testing.T) {
 		            "containers":null
 		        },
 		        "status":{
-		
 		        }
 			}
 	    },
@@ -407,7 +397,6 @@ func TestGeneratePatchesMultipleNamespacedResourceWithPrefix(t *testing.T) {
 	                "containers":null
 	            },
 	            "status":{
-	
 	            }
 	        }
 	    }
@@ -418,8 +407,13 @@ func TestGeneratePatchesMultipleNamespacedResourceWithPrefix(t *testing.T) {
 
 func verifyGenerateSyncPayload(t *testing.T, resourceType types.ResourceType, prefix string, objs []unstructured.Unstructured, expected string) {
 	t.Helper()
-	s := New(&rest.Config{}, opa.New("http://localhost:8181/", "").Prefix(prefix), resourceType)
-	patches, err := s.generateSyncPayload(objs)
+	s := New(nil, opa.New("http://localhost:8181/", "").Prefix(prefix), resourceType)
+	data := make([]interface{}, 0, len(objs))
+	for _, obj := range objs {
+		obj := obj // copy loop variable to avoid referencing problems!
+		data = append(data, &obj)
+	}
+	patches, err := s.generateSyncPayload(data)
 	if err != nil {
 		t.Fatalf("Unexpected error: %s", err)
 	}
