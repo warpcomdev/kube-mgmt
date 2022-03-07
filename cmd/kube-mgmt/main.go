@@ -81,6 +81,8 @@ func main() {
 	rootCmd.Flags().StringVarP(&params.policyValue, "policy-value", "", "rego", "replace value rego")
 
 	// Replication options.
+	params.replicateNamespace.SupportsNamespace = true
+	params.replicateCluster.SupportsNamespace = false
 	rootCmd.Flags().BoolVarP(&params.enablePolicies, "enable-policies", "", true, "whether to automatically discover policies from ConfigMaps")
 	rootCmd.Flags().BoolVarP(&params.enableData, "enable-data", "", false, "whether to automatically discover data from correctly labelled ConfigMaps")
 	rootCmd.Flags().StringSliceVarP(&params.policies, "policies", "", []string{"opa", "kube-federation-scheduling-policy"}, "automatically load policies from these namespaces")
@@ -176,8 +178,8 @@ func run(params *params) {
 
 	var client dynamic.Interface
 	resources := append(
-		getResourceTypes(params.replicateNamespace, true),
-		getResourceTypes(params.replicateCluster, false)...,
+		getResourceTypes(params.replicateNamespace),
+		getResourceTypes(params.replicateCluster)...,
 	)
 	if len(resources) > 0 {
 		client, err = dynamic.NewForConfig(kubeconfig)
@@ -201,14 +203,15 @@ func loadRESTConfig(path string) (*rest.Config, error) {
 	return rest.InClusterConfig()
 }
 
-func getResourceTypes(f gvkFlag, namespaced bool) []types.ResourceType {
-	result := make([]types.ResourceType, 0, len(f))
-	for _, gvk := range f {
+func getResourceTypes(f gvkFlag) []types.ResourceType {
+	result := make([]types.ResourceType, 0, len(f.Gvk))
+	for _, gvk := range f.Gvk {
 		result = append(result, types.ResourceType{
-			Namespaced: namespaced,
+			Namespaced: f.SupportsNamespace,
 			Group:      gvk.Group,
 			Version:    gvk.Version,
 			Resource:   gvk.Kind,
+			Namespace:  gvk.Namespace,
 		})
 	}
 	return result

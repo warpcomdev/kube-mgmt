@@ -71,7 +71,7 @@ func (s *GenericSync) Run(ctx context.Context) {
 	})
 	var resource dynamic.ResourceInterface = baseResource
 	if s.ns.Namespaced {
-		resource = baseResource.Namespace(metav1.NamespaceAll)
+		resource = baseResource.Namespace(s.ns.GetNamespace())
 	}
 	start := time.Now()
 	store, controller := cache.NewInformer(
