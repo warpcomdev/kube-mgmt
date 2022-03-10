@@ -173,6 +173,14 @@ func (s *GenericSync) sync(resource dynamic.NamespaceableResourceInterface, quit
 	resourceVersion := result.GetResourceVersion()
 	logrus.Infof("Listed %v and got %v resources with resourceVersion %v. Took %v.", s.ns, len(result.Items), resourceVersion, dList)
 
+	w, err := resource.Watch(context.TODO(), metav1.ListOptions{
+		ResourceVersion: resourceVersion,
+	})
+	if err != nil {
+		return errKubernetes{fmt.Errorf("watch: %w", err)}
+	}
+	defer w.Stop()
+
 	tLoad := time.Now()
 
 	if err := s.syncAll(result.Items); err != nil {
@@ -181,15 +189,6 @@ func (s *GenericSync) sync(resource dynamic.NamespaceableResourceInterface, quit
 
 	dLoad := time.Since(tLoad)
 	logrus.Infof("Loaded %v resources into OPA. Took %v. Starting watch at resourceVersion %v.", s.ns, dLoad, resourceVersion)
-
-	w, err := resource.Watch(context.TODO(), metav1.ListOptions{
-		ResourceVersion: resourceVersion,
-	})
-	if err != nil {
-		return errKubernetes{fmt.Errorf("watch: %w", err)}
-	}
-
-	defer w.Stop()
 
 	ch := w.ResultChan()
 
