@@ -117,6 +117,9 @@ func (m *mockData) Play(t *testing.T, client *fake.FakeDynamicClient, sync *Gene
 	}
 	sync.RunContext(ctx)
 
+	if limit, ok := ctx.Deadline(); ok && time.Now().After(limit) {
+		t.Fatal("Test was cancelled because of timeout")
+	}
 	if cursor < len(play) {
 		t.Fatalf("Expected %d operations, got %d", len(play), cursor)
 	}

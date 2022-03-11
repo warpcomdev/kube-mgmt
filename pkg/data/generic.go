@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
@@ -29,18 +30,21 @@ import (
 
 // The min/max amount of time to wait when resetting the synchronizer.
 const (
-	backoffMax = time.Second * 30
-	backoffMin = time.Second
+	backoffMax   = time.Second * 30
+	backoffMin   = time.Second
+	jitterFactor = 1.25
 )
 
 // GenericSync replicates Kubernetes resources into OPA as raw JSON.
 type GenericSync struct {
-	client      dynamic.Interface
-	opa         opa_client.Data
-	ns          types.ResourceType
-	namespace   string
-	limiter     workqueue.RateLimiter
-	createError error // to support deprecated calls to New / Run
+	client        dynamic.Interface
+	opa           opa_client.Data
+	ns            types.ResourceType
+	namespace     string
+	limiter       workqueue.RateLimiter
+	refresh       time.Duration
+	removeManaged bool
+	createError   error // to support deprecated calls to New / Run
 }
 
 // New returns a new GenericSync that can be started.
@@ -88,6 +92,20 @@ func WithNamespace(namespace string) Option {
 	}
 }
 
+// WithRefresh reloads data into OPA with the given frequency
+func WithRefresh(every time.Duration) Option {
+	return func(s *GenericSync) {
+		s.refresh = every
+	}
+}
+
+// WithoutManaged removed `managedFields` field from data
+func WithoutManaged() Option {
+	return func(s *GenericSync) {
+		s.removeManaged = true
+	}
+}
+
 // Run starts the synchronizer. To stop the synchronizer send a message to the
 // channel.
 // Deprecated: Please use RunContext instead.
@@ -117,8 +135,25 @@ func (s *GenericSync) RunContext(ctx context.Context) error {
 
 	store, queue := s.setup(ctx)
 	go func() {
-		<-ctx.Done()
-		queue.ShutDown()
+		var (
+			ticker *time.Timer
+			tick   <-chan time.Time
+		)
+		if s.refresh > 0 {
+			ticker = time.NewTimer(wait.Jitter(s.refresh, jitterFactor))
+			tick = ticker.C
+			defer ticker.Stop()
+		}
+		defer queue.ShutDown()
+		for {
+			select {
+			case <-tick:
+				queue.Add(initPath)
+				ticker.Reset(wait.Jitter(s.refresh, jitterFactor))
+			case <-ctx.Done():
+				return
+			}
+		}
 	}()
 
 	s.loop(store, queue)
@@ -139,7 +174,7 @@ func (s *GenericSync) setup(ctx context.Context) (cache.Store, workqueue.Delayin
 	}
 
 	queue := workqueue.NewNamedDelayingQueue(s.ns.String())
-	store, controller := cache.NewInformer(
+	store, controller := cache.NewTransformingInformer(
 		&cache.ListWatch{
 			ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
 				return resource.List(ctx, options)
@@ -151,6 +186,7 @@ func (s *GenericSync) setup(ctx context.Context) (cache.Store, workqueue.Delayin
 		&unstructured.Unstructured{},
 		0,
 		queueResourceHandler{queue},
+		s.transform,
 	)
 
 	start, quit := time.Now(), ctx.Done()
@@ -225,7 +261,7 @@ func (s *GenericSync) loop(store cache.Store, queue workqueue.DelayingInterface)
 		logrus.Infof("Sync for %v finished. Exiting.", s.ns)
 	}()
 
-	delay := s.limiter.When(initPath)
+	var delay time.Duration
 	for !queue.ShuttingDown() {
 
 		queue.AddAfter(initPath, delay) // this special path will trigger a full load
@@ -244,7 +280,7 @@ func (s *GenericSync) loop(store cache.Store, queue workqueue.DelayingInterface)
 			queue.Done(key)
 		}
 
-		delay := s.limiter.When(initPath)
+		delay := s.when(initPath)
 		logrus.Errorf("Sync for %v failed, trying again in %v. Reason: %v", s.ns, delay, err)
 	}
 }
@@ -253,11 +289,9 @@ func (s *GenericSync) processNext(store cache.Store, path string, syncDone *bool
 
 	// On receiving the initPath, load a full dump of the data store
 	if path == initPath {
-		if *syncDone {
-			return nil
-		}
 		start, list := time.Now(), store.List()
 		if err := s.syncAll(list); err != nil {
+			*syncDone = false // sync broken!
 			return err
 		}
 		logrus.Infof("Loaded %d resources of kind %v into OPA. Took %v", len(list), s.ns, time.Since(start))
@@ -286,6 +320,10 @@ func (s *GenericSync) processNext(store cache.Store, path string, syncDone *bool
 	return nil
 }
 
+func (s *GenericSync) when(path string) time.Duration {
+	return wait.Jitter(s.limiter.When(path), jitterFactor)
+}
+
 func (s *GenericSync) syncAll(objs []interface{}) error {
 
 	// Build a list of patches to apply.
@@ -295,6 +333,18 @@ func (s *GenericSync) syncAll(objs []interface{}) error {
 	}
 
 	return s.opa.PutData("/", payload)
+}
+
+func (s *GenericSync) transform(obj interface{}) (interface{}, error) {
+	if !s.removeManaged {
+		return obj, nil
+	}
+	accessor, err := meta.Accessor(obj)
+	if err != nil {
+		return obj, nil
+	}
+	accessor.SetManagedFields(nil)
+	return obj, nil
 }
 
 func generateSyncPayload(objs []interface{}, namespaced bool) (map[string]interface{}, error) {

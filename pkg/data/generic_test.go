@@ -53,6 +53,9 @@ func TestGenericSync(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{
 						Name:            "node1",
 						ResourceVersion: "0",
+						ManagedFields: []metav1.ManagedFieldsEntry{
+							{Manager: "test"},
+						},
 					},
 					Spec:   apiv1.NodeSpec{},
 					Status: apiv1.NodeStatus{},
@@ -65,7 +68,10 @@ func TestGenericSync(t *testing.T) {
 					"metadata":{
 						"creationTimestamp":null,
 						"name":"node1",
-						"resourceVersion":"0"
+						"resourceVersion":"0",
+						"managedFields":[
+							{"manager":"test"}
+						]
 					},
 					"spec":{
 					},
@@ -108,6 +114,9 @@ func TestGenericSync(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{
 						Name:            "node1",
 						ResourceVersion: "0",
+						ManagedFields: []metav1.ManagedFieldsEntry{
+							{Manager: "test"},
+						},
 					},
 					Spec:   apiv1.NodeSpec{},
 					Status: apiv1.NodeStatus{},
@@ -120,7 +129,10 @@ func TestGenericSync(t *testing.T) {
 					"metadata":{
 						"creationTimestamp":null,
 						"name":"node1",
-						"resourceVersion":"0"
+						"resourceVersion":"0",
+						"managedFields": [
+							{"manager":"test"}
+						]
 					},
 					"spec":{
 					},
@@ -187,6 +199,9 @@ func TestGenericSync(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{
 						Name:            "node3",
 						ResourceVersion: "0",
+						ManagedFields: []metav1.ManagedFieldsEntry{
+							{Manager: "test"},
+						},
 					},
 					Spec:   apiv1.NodeSpec{},
 					Status: apiv1.NodeStatus{},
@@ -259,7 +274,10 @@ func TestGenericSync(t *testing.T) {
 					"metadata":{
 						"creationTimestamp":null,
 						"name":"node3",
-						"resourceVersion":"0"
+						"resourceVersion":"0",
+						"managedFields": [
+							{"manager": "test"}
+						]
 					},
 					"spec":{
 					},
@@ -303,6 +321,9 @@ func TestGenericSync(t *testing.T) {
 						Name:            "pod1",
 						Namespace:       "ns1",
 						ResourceVersion: "0",
+						ManagedFields: []metav1.ManagedFieldsEntry{
+							{Manager: "test"},
+						},
 					},
 					Spec:   apiv1.PodSpec{},
 					Status: apiv1.PodStatus{},
@@ -317,7 +338,10 @@ func TestGenericSync(t *testing.T) {
 							"creationTimestamp":null,
 							"name":"pod1",
 							"namespace":"ns1",
-							"resourceVersion":"0"
+							"resourceVersion":"0",
+							"managedFields": [
+								{"manager":"test"}
+							]
 						},
 						"spec":{
 							"containers":null
@@ -346,6 +370,9 @@ func TestGenericSync(t *testing.T) {
 						Name:            "pod1",
 						Namespace:       "ns1",
 						ResourceVersion: "0",
+						ManagedFields: []metav1.ManagedFieldsEntry{
+							{Manager: "pod1"},
+						},
 					},
 					Spec:   apiv1.PodSpec{},
 					Status: apiv1.PodStatus{},
@@ -360,7 +387,10 @@ func TestGenericSync(t *testing.T) {
 							"creationTimestamp":null,
 							"name":"pod1",
 							"namespace":"ns1",
-							"resourceVersion":"0"
+							"resourceVersion":"0",
+							"managedFields": [
+								{"manager": "pod1"}
+							]
 						},
 						"spec":{
 							"containers":null
@@ -402,6 +432,9 @@ func TestGenericSync(t *testing.T) {
 						Name:            "pod2",
 						Namespace:       "ns1",
 						ResourceVersion: "0",
+						ManagedFields: []metav1.ManagedFieldsEntry{
+							{Manager: "test"},
+						},
 					},
 					Spec:   apiv1.PodSpec{},
 					Status: apiv1.PodStatus{},
@@ -444,7 +477,10 @@ func TestGenericSync(t *testing.T) {
 							"creationTimestamp":null,
 							"name":"pod2",
 							"namespace":"ns1",
-							"resourceVersion":"0"
+							"resourceVersion":"0",
+							"managedFields": [
+								{"manager":"test"}
+							]
 						},
 						"spec":{
 							"containers":null
@@ -523,6 +559,16 @@ func TestGenericSync(t *testing.T) {
 			t.Parallel()
 			tc.testRetryDelete(t, sc)
 		})
+
+		t.Run(fmt.Sprintf("%s - Refresh", tc.label), func(t *testing.T) {
+			t.Parallel()
+			tc.testRefresh(t, sc)
+		})
+
+		t.Run(fmt.Sprintf("%s - Without managed fields", tc.label), func(t *testing.T) {
+			t.Parallel()
+			tc.testWithoutManaged(t, sc)
+		})
 	}
 }
 
@@ -583,7 +629,7 @@ func (tc *testCase) testRetryAdd(t *testing.T, scheme *runtime.Scheme) {
 		OnPut("/", tc.expectedJson, nil, errors.New("test fail update")).
 		OnPut("/", tc.expectedJson, nil, nil)
 
-	tc.play(t, scheme, tc.objs, play)
+	tc.play(t, scheme, tc.objs, play, WithBackoff(0, 5*time.Second))
 }
 
 func (tc *testCase) testRetryUpdate(t *testing.T, scheme *runtime.Scheme) {
@@ -598,7 +644,7 @@ func (tc *testCase) testRetryUpdate(t *testing.T, scheme *runtime.Scheme) {
 		// don't check the payload on this last put, because we
 		// have removed an item so it no longer matches the tc.expectedJson
 
-	tc.play(t, scheme, tc.objs, play)
+	tc.play(t, scheme, tc.objs, play, WithBackoff(0, 5*time.Second))
 }
 
 func (tc *testCase) testRetryDelete(t *testing.T, scheme *runtime.Scheme) {
@@ -610,7 +656,22 @@ func (tc *testCase) testRetryDelete(t *testing.T, scheme *runtime.Scheme) {
 		// don't check the payload on this last put, because we
 		// have removed an item so it no longer matches the tc.expectedJson
 
-	tc.play(t, scheme, tc.objs, play)
+	tc.play(t, scheme, tc.objs, play, WithBackoff(0, 5*time.Second))
+}
+
+func (tc *testCase) testRefresh(t *testing.T, scheme *runtime.Scheme) {
+	play := script{}.
+		OnPut("/", tc.expectedJson, nil, nil).
+		OnPut("/", tc.expectedJson, nil, nil)
+
+	tc.play(t, scheme, tc.objs, play, WithRefresh(time.Second))
+}
+
+func (tc *testCase) testWithoutManaged(t *testing.T, scheme *runtime.Scheme) {
+	play := script{}.
+		OnPut("/", stripManagedFields(tc.expectedJson), nil, nil)
+
+	tc.play(t, scheme, tc.objs, play, WithoutManaged())
 }
 
 func (tc *testCase) mustGetResource(t *testing.T, client *fake.FakeDynamicClient, useNamespaceFrom runtime.Object) dynamic.ResourceInterface {
@@ -668,12 +729,12 @@ func (tc *testCase) mustUpdate(t *testing.T, obj runtime.Object) func(*fake.Fake
 	}
 }
 
-func (tc *testCase) play(t *testing.T, scheme *runtime.Scheme, objs []runtime.Object, play script) *mockData {
+func (tc *testCase) play(t *testing.T, scheme *runtime.Scheme, objs []runtime.Object, play script, opts ...Option) *mockData {
 	t.Helper()
 
 	client := fake.NewSimpleDynamicClient(scheme, objs...)
 	mock := &mockData{}
-	sync := NewFromInterface(client, mock.Prefix(tc.prefix), tc.resourceType, WithBackoff(0, 5*time.Second))
+	sync := NewFromInterface(client, mock.Prefix(tc.prefix), tc.resourceType, opts...)
 
 	mock.Play(t, client, sync, play)
 	return mock
@@ -695,4 +756,18 @@ func mustGvr(resourceType types.ResourceType) schema.GroupVersionResource {
 		Version:  resourceType.Version,
 		Resource: resourceType.Resource,
 	}
+}
+
+func stripManagedFields(input map[string]interface{}) map[string]interface{} {
+	output := make(map[string]interface{})
+	for k, v := range input {
+		if k == "managedFields" {
+			continue
+		}
+		if m, ok := v.(map[string]interface{}); ok {
+			v = stripManagedFields(m)
+		}
+		output[k] = v
+	}
+	return output
 }
