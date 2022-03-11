@@ -15,6 +15,9 @@ func TestFlagParsing(t *testing.T) {
 	badPaths := []string{
 		"foo/bar/",
 		"foo",
+		"foo:",
+		"foo/bar:",
+		"foo/:bar",
 	}
 
 	for _, tc := range badPaths {
@@ -23,26 +26,48 @@ func TestFlagParsing(t *testing.T) {
 		}
 	}
 
-	expected := gvkFlag{
-		{"example.org", "foo", "bar"},
+	goodPaths := []struct {
+		path string
+		gvk  groupVersionKind
+	}{
+		{
+			path: "example.org/Foo/bar",
+			gvk:  groupVersionKind{"example.org", "foo", "bar", ""},
+		},
+		{
+			path: "example.org/Bar/baz",
+			gvk:  groupVersionKind{"example.org", "bar", "baz", ""},
+		},
+		{
+			path: "v2/corge",
+			gvk:  groupVersionKind{"", "v2", "corge", ""},
+		},
+		{
+			path: "short/path:ns1",
+			gvk:  groupVersionKind{"", "short", "path", "ns1"},
+		},
+		{
+			path: "star/removed:*",
+			gvk:  groupVersionKind{"", "star", "removed", ""},
+		},
+		{
+			path: "example.org/long/path:ns2",
+			gvk:  groupVersionKind{"example.org", "long", "path", "ns2"},
+		},
 	}
 
-	if err := f.Set("example.org/Foo/bar"); err != nil || !reflect.DeepEqual(expected, f) {
-		t.Fatalf("Expected %v but got: %v (err: %v)", expected, f, err)
+	for index, tc := range goodPaths {
+		err := f.Set(tc.path)
+		if err != nil {
+			t.Fatalf("Expected %v from %v but got error: %v", tc.gvk, tc.path, err)
+		}
+		if len(f) != index+1 {
+			t.Fatalf("Expected %v from %s but flag was not parsed", tc.gvk, tc.path)
+		}
+		if !reflect.DeepEqual(tc.gvk, f[index]) {
+			t.Fatalf("Expected %v from %s but got: %v", tc.gvk, tc.path, f[index])
+		}
 	}
-
-	expected = append(expected, groupVersionKind{"example.org", "bar", "baz"})
-
-	if err := f.Set("example.org/Bar/baz"); err != nil || !reflect.DeepEqual(expected, f) {
-		t.Fatalf("Expected %v but got: %v (err: %v)", expected, f, err)
-	}
-
-	expected = append(expected, groupVersionKind{"", "v2", "corge"})
-
-	if err := f.Set("v2/corge"); err != nil || !reflect.DeepEqual(expected, f) {
-		t.Fatalf("Expected %v but got: %v (err: %v)", expected, f, err)
-	}
-
 }
 
 func TestFlagString(t *testing.T) {

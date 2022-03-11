@@ -185,12 +185,15 @@ func run(params *params) {
 	defer cancel()
 
 	for _, gvk := range params.replicateCluster {
+		if gvk.Namespace != "" {
+			logrus.Fatalf("Namespace suffix not supported in replicate flag: %s", gvk.String())
+		}
 		sync := data.NewFromInterface(client, opa.New(params.opaURL, params.opaAuth).Prefix(params.replicatePath), getResourceType(gvk, false))
 		go sync.RunContext(ctx)
 	}
 
 	for _, gvk := range params.replicateNamespace {
-		sync := data.NewFromInterface(client, opa.New(params.opaURL, params.opaAuth).Prefix(params.replicatePath), getResourceType(gvk, true))
+		sync := data.NewFromInterface(client, opa.New(params.opaURL, params.opaAuth).Prefix(params.replicatePath), getResourceType(gvk, true), data.WithNamespace(gvk.Namespace))
 		go sync.RunContext(ctx)
 	}
 	quit := make(chan struct{})

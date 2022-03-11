@@ -38,6 +38,7 @@ type GenericSync struct {
 	client      dynamic.Interface
 	opa         opa_client.Data
 	ns          types.ResourceType
+	namespace   string
 	limiter     workqueue.RateLimiter
 	createError error // to support deprecated calls to New / Run
 }
@@ -57,9 +58,10 @@ type Option func(s *GenericSync)
 // NewFromInterface returns a new GenericSync that can be started.
 func NewFromInterface(client dynamic.Interface, opa opa_client.Data, ns types.ResourceType, opts ...Option) *GenericSync {
 	s := &GenericSync{
-		client: client,
-		ns:     ns,
-		opa:    opa.Prefix(ns.Resource),
+		client:    client,
+		ns:        ns,
+		opa:       opa.Prefix(ns.Resource),
+		namespace: metav1.NamespaceAll,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -70,10 +72,19 @@ func NewFromInterface(client dynamic.Interface, opa opa_client.Data, ns types.Re
 	return s
 }
 
-//WithBackoff tunes the values of exponential backoff
+// WithBackoff tunes the values of exponential backoff
 func WithBackoff(min, max time.Duration) Option {
 	return func(s *GenericSync) {
 		s.limiter = workqueue.NewItemExponentialFailureRateLimiter(min, max)
+	}
+}
+
+// WithNamespace restricts the GenericSync to a single namespace
+func WithNamespace(namespace string) Option {
+	return func(s *GenericSync) {
+		if namespace != "" && namespace != "*" {
+			s.namespace = namespace
+		}
 	}
 }
 
@@ -124,7 +135,7 @@ func (s *GenericSync) setup(ctx context.Context) (cache.Store, workqueue.Delayin
 	})
 	var resource dynamic.ResourceInterface = baseResource
 	if s.ns.Namespaced {
-		resource = baseResource.Namespace(metav1.NamespaceAll)
+		resource = baseResource.Namespace(s.namespace)
 	}
 
 	queue := workqueue.NewNamedDelayingQueue(s.ns.String())
