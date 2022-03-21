@@ -14,27 +14,30 @@ import (
 	"time"
 
 	"github.com/open-policy-agent/kube-mgmt/pkg/opa"
+
 	"github.com/sirupsen/logrus"
+
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/selection"
-	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
+	typev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 )
 
 const (
+	PolicyLabelKey            = "openpolicyagent.org/policy"
+	PolicyLabelValue          = "rego"
+	dataLabelKey              = "openpolicyagent.org/data"
+	dataLabelValue            = "opa"
 	policyStatusAnnotationKey = "openpolicyagent.org/policy-status"
-
-	dataLabelKey            = "openpolicyagent.org/data"
-	dataLabelValue          = "opa"
-	dataStatusAnnotationKey = "openpolicyagent.org/data-status"
+	dataStatusAnnotationKey   = "openpolicyagent.org/data-status"
 
 	// Special namespace in Kubernetes federation that holds scheduling policies.
 	// commented because staticcheck: 'const kubeFederationSchedulingPolicy is unused (U1000)'
@@ -105,13 +108,14 @@ func matchesNamespace(cm *v1.ConfigMap, namespaces []string) bool {
 
 // Sync replicates policies or data stored in the API server as ConfigMaps into OPA.
 type Sync struct {
-	kubeconfig *rest.Config
-	opa        opa.Client
-	clientset  *kubernetes.Clientset
-	matcher    func(*v1.ConfigMap) (bool, bool)
+	createError error // To support Legacy New and Run
+	opa         opa.Client
+	clientset   client
+	matcher     func(*v1.ConfigMap) (bool, bool)
 }
 
 // New returns a new Sync that can be started.
+// Deprecated: Use NewFromInterface instead.
 func New(kubeconfig *rest.Config, opa opa.Client, matcher func(*v1.ConfigMap) (bool, bool)) *Sync {
 	cpy := *kubeconfig
 	cpy.GroupVersion = &schema.GroupVersion{
@@ -131,53 +135,80 @@ func New(kubeconfig *rest.Config, opa opa.Client, matcher func(*v1.ConfigMap) (b
 		return nil
 	})
 	builder.AddToScheme(scheme)
+	clientset, err := kubernetes.NewForConfig(&cpy)
+	if err != nil {
+		return &Sync{
+			createError: err,
+		}
+	}
+	return NewFromInterface(clientset.CoreV1(), opa, matcher)
+}
+
+// New returns a new Sync that can be started.
+func NewFromInterface(clientset typev1.CoreV1Interface, opa opa.Client, matcher func(*v1.ConfigMap) (bool, bool)) *Sync {
 	return &Sync{
-		kubeconfig: &cpy,
-		opa:        opa,
-		matcher:    matcher,
+		clientset: client{clientset},
+		opa:       opa,
+		matcher:   matcher,
 	}
 }
 
 // Run starts the synchronizer. To stop the synchronizer send a message to the
 // channel.
+// Deprecated: UseRunContext instead.
 func (s *Sync) Run(namespaces []string) (chan struct{}, error) {
-	client, err := rest.RESTClientFor(s.kubeconfig)
-	if err != nil {
-		return nil, err
+	if s.createError != nil {
+		return nil, s.createError
 	}
-	s.clientset, err = kubernetes.NewForConfig(s.kubeconfig)
-	if err != nil {
-		return nil, err
-	}
+
 	quit := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { // propagate cancel signal from channel to context
+		<-quit
+		cancel()
+	}()
 
 	for _, namespace := range namespaces {
-		if namespace == "*" {
-			namespace = v1.NamespaceAll
-		}
-		source := cache.NewListWatchFromClient(
-			client,
-			"configmaps",
-			namespace,
-			fields.Everything())
-		store, controller := cache.NewInformer(
-			source,
-			&v1.ConfigMap{},
-			time.Second*60,
-			cache.ResourceEventHandlerFuncs{
-				AddFunc:    s.add,
-				UpdateFunc: s.update,
-				DeleteFunc: s.delete,
-			})
-		for _, obj := range store.List() {
-			cm := obj.(*v1.ConfigMap)
-			if match, isPolicy := s.matcher(cm); match {
-				s.syncAdd(cm, isPolicy)
-			}
-		}
-		go controller.Run(quit)
+		go s.RunContext(ctx, namespace)
 	}
 	return quit, nil
+}
+
+// RunContext starts the synchronizer for a namespace in the foreground.
+// To stop it, cancel the context.
+func (s *Sync) RunContext(ctx context.Context, namespace string) error {
+	if s.createError != nil {
+		return s.createError
+	}
+
+	if namespace == "*" || namespace == "" {
+		namespace = v1.NamespaceAll
+	}
+	source := &cache.ListWatch{
+		ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
+			return s.clientset.ConfigMaps(namespace).List(ctx, options)
+		},
+		WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
+			return s.clientset.ConfigMaps(namespace).Watch(ctx, options)
+		},
+	}
+	store, controller := cache.NewInformer(
+		source,
+		&v1.ConfigMap{},
+		resyncPeriod,
+		cache.ResourceEventHandlerFuncs{
+			AddFunc:    s.add,
+			UpdateFunc: s.update,
+			DeleteFunc: s.delete,
+		})
+	for _, obj := range store.List() {
+		cm := obj.(*v1.ConfigMap)
+		if match, isPolicy := s.matcher(cm); match {
+			s.syncAdd(cm, isPolicy)
+		}
+	}
+	controller.Run(ctx.Done())
+	return nil
 }
 
 func (s *Sync) add(obj interface{}) {
@@ -220,14 +251,9 @@ func (s *Sync) delete(obj interface{}) {
 
 func (s *Sync) syncAdd(cm *v1.ConfigMap, isPolicy bool) {
 	path := fmt.Sprintf("%v/%v", cm.Namespace, cm.Name)
-	// sort keys so that errors, if any, are always in the same order
-	sortedKeys := make([]string, 0, len(cm.Data))
-	for key := range cm.Data {
-		sortedKeys = append(sortedKeys, key)
-	}
-	sort.Strings(sortedKeys)
 	var syncErr errList
-	for _, key := range sortedKeys {
+	// sort keys so that errors, if any, are always in the same order
+	for _, key := range sortKeys(cm) {
 		value := cm.Data[key]
 		id := fmt.Sprintf("%v/%v", path, key)
 
@@ -263,18 +289,19 @@ func (s *Sync) syncAdd(cm *v1.ConfigMap, isPolicy bool) {
 
 func (s *Sync) syncRemove(cm *v1.ConfigMap, isPolicy bool) {
 	path := fmt.Sprintf("%v/%v", cm.Namespace, cm.Name)
-	for key := range cm.Data {
-		id := fmt.Sprintf("%v/%v", path, key)
+	if isPolicy {
+		// sort keys so that errors, if any, are always in the same order
+		for _, key := range sortKeys(cm) {
+			id := fmt.Sprintf("%v/%v", path, key)
 
-		if isPolicy {
 			if err := s.opa.DeletePolicy(id); err != nil {
 				logrus.Errorf("Failed to delete policy %v: %v", id, err)
 			}
-		} else {
-			if err := s.opa.PatchData(path, "remove", nil); err != nil {
-				logrus.Errorf("Failed to remove %v (will reset OPA data and resync in %v): %v", id, resyncPeriod, err)
-				s.syncReset(id)
-			}
+		}
+	} else {
+		if err := s.opa.PatchData(path, "remove", nil); err != nil {
+			logrus.Errorf("Failed to remove %v (will reset OPA data and resync in %v): %v", path, resyncPeriod, err)
+			s.syncReset(path)
 		}
 	}
 }
@@ -289,37 +316,15 @@ func (s *Sync) setStatusAnnotation(cm *v1.ConfigMap, st status, isPolicy bool) {
 	if err != nil {
 		logrus.Errorf("Failed to serialize %v for %v/%v: %v", statusAnnotationKey, cm.Namespace, cm.Name, err)
 	}
-	annotation := string(bs)
-	if cm.Annotations != nil {
-		if existing, ok := cm.Annotations[policyStatusAnnotationKey]; ok {
-			if existing == annotation {
-				// If the annotation did not change, do not write it.
-				// (issue https://github.com/open-policy-agent/kube-mgmt/issues/90)
-				return
-			}
-		}
-	}
-	patch := map[string]interface{}{
-		"metadata": map[string]interface{}{
-			"annotations": map[string]interface{}{
-				policyStatusAnnotationKey: annotation,
-			},
-		},
-	}
-	bs, err = json.Marshal(patch)
-	if err != nil {
-		logrus.Errorf("Failed to serialize patch for %v/%v: %v", cm.Namespace, cm.Name, err)
-	}
-	_, err = s.clientset.CoreV1().ConfigMaps(cm.Namespace).Patch(context.TODO(), cm.Name, types.StrategicMergePatchType, bs, metav1.PatchOptions{})
-	if err != nil {
-		logrus.Errorf("Failed to %v for %v/%v: %v", statusAnnotationKey, cm.Namespace, cm.Name, err)
+	if err := s.clientset.Annotate(context.TODO(), cm, statusAnnotationKey, string(bs)); err != nil {
+		logrus.Error(err)
 	}
 }
 
 func (s *Sync) syncReset(id string) {
 	d := syncResetBackoffMin
 	for {
-		if err := s.opa.PutData("/", map[string]interface{}{}); err != nil {
+		if err := s.opa.PutData(id, map[string]interface{}{}); err != nil {
 			logrus.Errorf("Failed to reset OPA data for %v (will retry after %v): %v", id, d, err)
 		} else {
 			return
@@ -385,4 +390,14 @@ func (m errList) Error() string {
 		text = append(text, err.Error())
 	}
 	return strings.Join(text, "\n")
+}
+
+// sort keys so that errors, if any, are always in the same order
+func sortKeys(cm *v1.ConfigMap) []string {
+	sortedKeys := make([]string, 0, len(cm.Data))
+	for key := range cm.Data {
+		sortedKeys = append(sortedKeys, key)
+	}
+	sort.Strings(sortedKeys)
+	return sortedKeys
 }

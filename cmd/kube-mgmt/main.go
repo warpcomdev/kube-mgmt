@@ -77,8 +77,8 @@ func main() {
 	rootCmd.Flags().BoolVarP(&params.opaAllowInsecure, "opa-allow-insecure", "", false, "allow insecure https connections to OPA")
 	rootCmd.Flags().StringVarP(&params.podName, "pod-name", "", "", "set pod name (required for admission registration ownership)")
 	rootCmd.Flags().StringVarP(&params.podNamespace, "pod-namespace", "", "", "set pod namespace (required for admission registration ownership)")
-	rootCmd.Flags().StringVarP(&params.policyLabel, "policy-label", "", "openpolicyagent.org/policy", "replace label openpolicyagent.org/policy")
-	rootCmd.Flags().StringVarP(&params.policyValue, "policy-value", "", "rego", "replace value rego")
+	rootCmd.Flags().StringVarP(&params.policyLabel, "policy-label", "", configmap.PolicyLabelKey, "replace label "+configmap.PolicyLabelKey)
+	rootCmd.Flags().StringVarP(&params.policyValue, "policy-value", "", configmap.PolicyLabelValue, "replace value "+configmap.PolicyLabelValue)
 
 	// Replication options.
 	rootCmd.Flags().BoolVarP(&params.enablePolicies, "enable-policies", "", true, "whether to automatically discover policies from ConfigMaps")
